@@ -1,4 +1,4 @@
-defmodule KaleoWeb.MixProject do
+defmodule Kaleo.Web.MixProject do
   use Mix.Project
 
   def project do
@@ -22,7 +22,7 @@ defmodule KaleoWeb.MixProject do
   # Type `mix help compile.app` for more information.
   def application do
     [
-      mod: {KaleoWeb.Application, []},
+      mod: {Kaleo.Web.Application, []},
       extra_applications: [:logger, :runtime_tools]
     ]
   end

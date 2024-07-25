@@ -1,4 +1,4 @@
-defmodule KaleoWeb.CoreComponents do
+defmodule Kaleo.Web.CoreComponents do
   @moduledoc """
   Provides core UI components.
 
@@ -17,7 +17,7 @@ defmodule KaleoWeb.CoreComponents do
   use Phoenix.Component
 
   alias Phoenix.LiveView.JS
-  import KaleoWeb.Gettext
+  import Kaleo.Web.Gettext
 
   @doc """
   Renders a modal.
@@ -659,9 +659,9 @@ defmodule KaleoWeb.CoreComponents do
     # with our gettext backend as first argument. Translations are
     # available in the errors.po file (as we use the "errors" domain).
     if count = opts[:count] do
-      Gettext.dngettext(KaleoWeb.Gettext, "errors", msg, msg, count, opts)
+      Gettext.dngettext(Kaleo.Web.Gettext, "errors", msg, msg, count, opts)
     else
-      Gettext.dgettext(KaleoWeb.Gettext, "errors", msg, opts)
+      Gettext.dgettext(Kaleo.Web.Gettext, "errors", msg, opts)
     end
   end
 

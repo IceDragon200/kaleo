@@ -1,4 +1,4 @@
-defmodule KaleoWeb.Application do
+defmodule Kaleo.Web.Application do
   # See https://hexdocs.pm/elixir/Application.html
   # for more information on OTP Applications
   @moduledoc false
@@ -8,16 +8,16 @@ defmodule KaleoWeb.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      KaleoWeb.Telemetry,
-      # Start a worker by calling: KaleoWeb.Worker.start_link(arg)
-      # {KaleoWeb.Worker, arg},
+      Kaleo.Web.Telemetry,
+      # Start a worker by calling: Kaleo.Web.Worker.start_link(arg)
+      # {Kaleo.Web.Worker, arg},
       # Start to serve requests, typically the last entry
-      KaleoWeb.Endpoint
+      Kaleo.Web.Endpoint
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: KaleoWeb.Supervisor]
+    opts = [strategy: :one_for_one, name: Kaleo.Web.Supervisor]
     Supervisor.start_link(children, opts)
   end
 
@@ -25,7 +25,7 @@ defmodule KaleoWeb.Application do
   # whenever the application is updated.
   @impl true
   def config_change(changed, _new, removed) do
-    KaleoWeb.Endpoint.config_change(changed, removed)
+    Kaleo.Web.Endpoint.config_change(changed, removed)
     :ok
   end
 end

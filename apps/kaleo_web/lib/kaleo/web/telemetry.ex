@@ -1,4 +1,4 @@
-defmodule KaleoWeb.Telemetry do
+defmodule Kaleo.Web.Telemetry do
   use Supervisor
   import Telemetry.Metrics
 
@@ -86,7 +86,7 @@ defmodule KaleoWeb.Telemetry do
     [
       # A module, function and arguments to be invoked periodically.
       # This function must call :telemetry.execute/3 and a metric must be added above.
-      # {KaleoWeb, :count_users, []}
+      # {Kaleo.Web, :count_users, []}
     ]
   end
 end

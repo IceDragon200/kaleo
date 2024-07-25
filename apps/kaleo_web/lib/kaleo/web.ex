@@ -1,12 +1,12 @@
-defmodule KaleoWeb do
+defmodule Kaleo.Web do
   @moduledoc """
   The entrypoint for defining your web interface, such
   as controllers, components, channels, and so on.
 
   This can be used in your application as:
 
-      use KaleoWeb, :controller
-      use KaleoWeb, :html
+      use Kaleo.Web, :controller
+      use Kaleo.Web, :html
 
   The definitions below will be executed for every controller,
   component, etc, so keep them short and clean, focused
@@ -40,10 +40,10 @@ defmodule KaleoWeb do
     quote do
       use Phoenix.Controller,
         formats: [:html, :json],
-        layouts: [html: KaleoWeb.Layouts]
+        layouts: [html: Kaleo.Web.Layouts]
 
       import Plug.Conn
-      import KaleoWeb.Gettext
+      import Kaleo.Web.Gettext
 
       unquote(verified_routes())
     end
@@ -52,7 +52,7 @@ defmodule KaleoWeb do
   def live_view do
     quote do
       use Phoenix.LiveView,
-        layout: {KaleoWeb.Layouts, :app}
+        layout: {Kaleo.Web.Layouts, :app}
 
       unquote(html_helpers())
     end
@@ -84,8 +84,8 @@ defmodule KaleoWeb do
       # HTML escaping functionality
       import Phoenix.HTML
       # Core UI components and translation
-      import KaleoWeb.CoreComponents
-      import KaleoWeb.Gettext
+      import Kaleo.Web.CoreComponents
+      import Kaleo.Web.Gettext
 
       # Shortcut for generating JS commands
       alias Phoenix.LiveView.JS
@@ -98,9 +98,9 @@ defmodule KaleoWeb do
   def verified_routes do
     quote do
       use Phoenix.VerifiedRoutes,
-        endpoint: KaleoWeb.Endpoint,
-        router: KaleoWeb.Router,
-        statics: KaleoWeb.static_paths()
+        endpoint: Kaleo.Web.Endpoint,
+        router: Kaleo.Web.Router,
+        statics: Kaleo.Web.static_paths()
     end
   end
 

@@ -1,5 +1,5 @@
-defmodule KaleoWeb.ErrorHTML do
-  use KaleoWeb, :html
+defmodule Kaleo.Web.ErrorHTML do
+  use Kaleo.Web, :html
 
   # If you want to customize your error pages,
   # uncomment the embed_templates/1 call below

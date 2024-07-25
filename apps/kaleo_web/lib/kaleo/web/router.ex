@@ -1,11 +1,11 @@
-defmodule KaleoWeb.Router do
-  use KaleoWeb, :router
+defmodule Kaleo.Web.Router do
+  use Kaleo.Web, :router
 
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
     plug :fetch_live_flash
-    plug :put_root_layout, html: {KaleoWeb.Layouts, :root}
+    plug :put_root_layout, html: {Kaleo.Web.Layouts, :root}
     plug :protect_from_forgery
     plug :put_secure_browser_headers
   end
@@ -14,14 +14,14 @@ defmodule KaleoWeb.Router do
     plug :accepts, ["json"]
   end
 
-  scope "/", KaleoWeb do
+  scope "/", Kaleo.Web do
     pipe_through :browser
 
     get "/", PageController, :home
   end
 
   # Other scopes may use custom stacks.
-  # scope "/api", KaleoWeb do
+  # scope "/api", Kaleo.Web do
   #   pipe_through :api
   # end
 
@@ -37,7 +37,7 @@ defmodule KaleoWeb.Router do
     scope "/dev" do
       pipe_through :browser
 
-      live_dashboard "/dashboard", metrics: KaleoWeb.Telemetry
+      live_dashboard "/dashboard", metrics: Kaleo.Web.Telemetry
       forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
   end

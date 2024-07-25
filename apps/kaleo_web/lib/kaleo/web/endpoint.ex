@@ -1,4 +1,4 @@
-defmodule KaleoWeb.Endpoint do
+defmodule Kaleo.Web.Endpoint do
   use Phoenix.Endpoint, otp_app: :kaleo_web
 
   # The session will be stored in the cookie and signed,
@@ -21,7 +21,7 @@ defmodule KaleoWeb.Endpoint do
     at: "/",
     from: :kaleo_web,
     gzip: false,
-    only: KaleoWeb.static_paths()
+    only: Kaleo.Web.static_paths()
 
   # Code reloading can be explicitly enabled under the
   # :code_reloader configuration of your endpoint.
@@ -47,5 +47,5 @@ defmodule KaleoWeb.Endpoint do
   plug Plug.MethodOverride
   plug Plug.Head
   plug Plug.Session, @session_options
-  plug KaleoWeb.Router
+  plug Kaleo.Web.Router
 end

@@ -27,11 +27,11 @@ config :kaleo_web,
   generators: [context_app: :kaleo]
 
 # Configures the endpoint
-config :kaleo_web, KaleoWeb.Endpoint,
+config :kaleo_web, Kaleo.Web.Endpoint,
   url: [host: "localhost"],
   adapter: Phoenix.Endpoint.Cowboy2Adapter,
   render_errors: [
-    formats: [html: KaleoWeb.ErrorHTML, json: KaleoWeb.ErrorJSON],
+    formats: [html: Kaleo.Web.ErrorHTML, json: Kaleo.Web.ErrorJSON],
     layout: false
   ],
   pubsub_server: Kaleo.PubSub,
