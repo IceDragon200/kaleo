@@ -8,12 +8,14 @@ defmodule Kaleo.Application do
   @impl true
   def start(_type, _args) do
     children = [
+      Kaleo.ConfigHost,
       # Kaleo.Repo,
       {DNSCluster, query: Application.get_env(:kaleo, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Kaleo.PubSub},
       # Start the Finch HTTP client for sending emails
       # {Finch, name: Kaleo.Finch}
       # Start a worker by calling: Kaleo.Worker.start_link(arg)
+      Kaleo.EventProcessor,
       Kaleo.Scheduler,
     ]
 

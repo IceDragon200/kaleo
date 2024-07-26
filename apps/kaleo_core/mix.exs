@@ -25,7 +25,12 @@ defmodule Kaleo.Core.MixProject do
     [
       {:ecto, "~> 3.0"},
       {:jason, "~> 1.2"},
+      {:kuddle, "~> 0.2.1"},
+      {:kuddle_config, "~> 0.3.0"},
+      {:timex, "~> 3.6"},
       {:loxe, git: "https://github.com/polyfox/loxe"},
+      # {:artemis_ql, git: "https://github.com/Tychron/artemis_ql", branch: "0.7.0"},
+      {:unit_fmt, git: "https://github.com/IceDragon200/unit_fmt.git"},
     ]
   end
 end
