@@ -95,18 +95,25 @@ defmodule Kaleo.Scheduler do
   end
 
   @impl true
-  def handle_continue(:resolve_ready, %State{} = state) do
-    state = %{state | has_ready: false}
+  def handle_continue(:after_tick, %State{} = state) do
     now = DateTime.utc_now()
-    state = process_ready_bucket(now, state)
-    {:noreply, state}
-  end
 
-  @impl true
-  def handle_continue(:resolve_pending_scheduled, %State{} = state) do
-    state = %{state | has_pending_schedule: false}
-    now = DateTime.utc_now()
-    state = process_pending_schedule(now, state)
+    state =
+      if state.has_ready do
+        state = %{state | has_ready: false}
+        process_ready_bucket(now, state)
+      else
+        state
+      end
+
+    state =
+      if state.has_pending_schedule do
+        state = %{state | has_pending_schedule: false}
+        process_pending_schedule(now, state)
+      else
+        state
+      end
+
     {:noreply, state}
   end
 
@@ -116,40 +123,35 @@ defmodule Kaleo.Scheduler do
     config = config_changed_event(event, :config)
     state = on_config_changed(path, config, state)
 
-    if state.has_pending_schedule do
-      {:noreply, state, {:continue, :resolve_pending_scheduled}}
-    else
-      {:noreply, state}
-    end
+    {:noreply, state, {:continue, :after_tick}}
   end
 
   @impl true
   def handle_info({:timer_tick, duration}, %State{} = state) do
     Loxe.Logger.debug "ticking", duration: duration
     now = DateTime.utc_now()
-    case Map.fetch(state.buckets, duration) do
-      {:ok, bucket} ->
-        # restart the timer immediately so it starts counting down
-        state = restart_timer(duration, :tick, state)
-        # process the bucket now
-        state = check_bucket_tick(now, duration, bucket, state)
-        if state.has_ready do
-          {:noreply, state, {:continue, :resolve_ready}}
-        else
-          {:noreply, state}
-        end
+    state =
+      case Map.fetch(state.buckets, duration) do
+        {:ok, bucket} ->
+          # restart the timer immediately so it starts counting down
+          state = restart_timer(duration, :tick, state)
+          # process the bucket now
+          state = check_bucket_tick(now, duration, bucket, state)
 
-      :error ->
-        timers = Map.delete(state.timers, duration)
-        state = %{
           state
-          | timers: timers
-        }
-        {:noreply, state}
-    end
+
+        :error ->
+          timers = Map.delete(state.timers, duration)
+          %{
+            state
+            | timers: timers
+          }
+      end
+
+    {:noreply, state, {:continue, :after_tick}}
   end
 
-  defp process_pending_schedule(now, %State{} = state) do
+  defp process_pending_schedule(%DateTime{} = now, %State{} = state) do
     try do
       true = :ets.safe_fixtable(state.pending_schedule, true)
       reduce_pending_schedule(
@@ -163,38 +165,50 @@ defmodule Kaleo.Scheduler do
     end
   end
 
-  defp reduce_pending_schedule(_now, _table, :"$end_of_table", %State{} = state) do
+  defp reduce_pending_schedule(%DateTime{} = _now, _table, :"$end_of_table", %State{} = state) do
     state
   end
 
-  defp reduce_pending_schedule(now, table, key, %State{} = state) do
+  defp reduce_pending_schedule(%DateTime{} = now, table, key, %State{} = state) do
     state =
       case :ets.take(table, key) do
         [] ->
           state
 
-        [{item_id, item}] ->
+        [{item_id, {:item, nil, %Event{} = item}}] ->
           schedule_item(now, item_id, item, state)
+
+        [{item_id, {:item_id, ready_at, item_id}}] ->
+          schedule_item_id_with_ready_at(ready_at, now, item_id, state)
       end
 
     reduce_pending_schedule(now, table, :ets.next(table, key), state)
   end
 
-  defp add_item(now, item_id, %Event{} = item, %State{} = state) do
-    true = :ets.insert(state.items, {item_id, item})
+  defp schedule_item_id_with_ready_at(ready_at, %DateTime{} = now, item_id, %State{} = state) do
+    now_unix = DateTime.to_unix(now, :millisecond)
+    ready_in = max(ready_at - now_unix, 0)
+    bucket_id = choose_next_bucket(ready_in, state)
 
-    trigger_in = Event.time_until_next_trigger(item, now, :millisecond)
+    true = :ets.insert(state.buckets[bucket_id], {item_id, {ready_at, item_id}})
 
-    bucket_id = choose_next_bucket(trigger_in, state)
-
-    true = :ets.insert(state.buckets[bucket_id], {item_id, {trigger_in, item_id}})
-
-    Loxe.Logger.debug "added item",
+    Loxe.Logger.debug "scheduled item",
       item_id: item_id,
       initial_bucket_id: bucket_id,
-      trigger_at: DateTime.add(now, trigger_in, :millisecond)
+      ready_in: UnitFmt.format_time(ready_in, :millisecond),
+      ready_at: DateTime.from_unix!(ready_at, :millisecond)
 
     state
+  end
+
+  defp add_item(%DateTime{} = now, item_id, %Event{} = item, %State{} = state) do
+    true = :ets.insert(state.items, {item_id, item})
+
+    ready_in = Event.time_until_next_trigger(item, now, :millisecond)
+    now_unix = DateTime.to_unix(now, :millisecond)
+    ready_at = now_unix + ready_in
+
+    schedule_item_id_with_ready_at(ready_at, now, item_id, state)
   end
 
   @spec schedule_item(DateTime.t(), String.t(), Event.t(), State.t()) :: State.t()
@@ -269,26 +283,33 @@ defmodule Kaleo.Scheduler do
     state
   end
 
-  defp reduce_bucket_for_tick(now, duration, table, key, %State{} = state) do
+  defp reduce_bucket_for_tick(now, bucket_duration, table, key, %State{} = state) do
     state =
       case :ets.take(table, key) do
         [] ->
+          Loxe.Logger.warning "key missing from tick bucket", key: inspect(key)
           state
 
-        [{^key, {trigger_in, item_id}}] ->
-          trigger_in = trigger_in - duration
+        [{^key, {trigger_at, item_id}}] ->
+          now_unix = DateTime.to_unix(now, :millisecond)
+          trigger_in = trigger_at - now_unix
           if trigger_in <= 0 do
+            Loxe.Logger.info "an item is ready", item_id: item_id
             true = :ets.insert(state.ready, {item_id, {now, item_id}})
             %{state | has_ready: true}
           else
             bucket_id = choose_next_bucket(trigger_in, state)
+            Loxe.Logger.debug "item is not ready, rescheduling",
+              item_id: item_id,
+              next_bucket_id: bucket_id,
+              trigger_in: UnitFmt.format_time(trigger_in, :millisecond)
 
-            true = :ets.insert(state.buckets[bucket_id], {key, {trigger_in, item_id}})
+            true = :ets.insert(state.pending_schedule, {item_id, {:item_id, trigger_at, item_id}})
             state
           end
       end
 
-    reduce_bucket_for_tick(now, duration, table, :ets.next(table, key), state)
+    reduce_bucket_for_tick(now, bucket_duration, table, :ets.next(table, key), state)
   end
 
   @spec choose_next_bucket(timeout(), State.t()) :: timeout()
@@ -322,7 +343,9 @@ defmodule Kaleo.Scheduler do
   end
 
   defp restart_timer(duration, reason, %State{} = state) when is_integer(duration) do
-    Loxe.Logger.debug "restarting timer", duration: duration, reason: reason
+    Loxe.Logger.debug "restarting timer",
+      duration: duration,
+      reason: reason
 
     timers =
       case Map.pop(state.timers, duration) do
@@ -461,8 +484,7 @@ defmodule Kaleo.Scheduler do
 
       id when is_binary(id) ->
         Loxe.Logger.info "pushing event for scheduling", event_id: id
-        IO.inspect event
-        true = :ets.insert(state.pending_schedule, {id, event})
+        true = :ets.insert(state.pending_schedule, {id, {:item, nil, event}})
         %{state | has_pending_schedule: true}
     end
   end
