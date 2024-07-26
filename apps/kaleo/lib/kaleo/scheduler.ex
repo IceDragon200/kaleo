@@ -96,25 +96,29 @@ defmodule Kaleo.Scheduler do
 
   @impl true
   def handle_continue(:after_tick, %State{} = state) do
-    now = DateTime.utc_now()
+    Loxe.Logger.context [fn: :after_tick], fn ->
+      now = DateTime.utc_now()
 
-    state =
-      if state.has_ready do
-        state = %{state | has_ready: false}
-        process_ready_bucket(now, state)
-      else
-        state
-      end
+      state =
+        if state.has_ready do
+          Loxe.Logger.debug "has_ready set, processing ready events"
+          state = %{state | has_ready: false}
+          process_ready_bucket(now, state)
+        else
+          state
+        end
 
-    state =
-      if state.has_pending_schedule do
-        state = %{state | has_pending_schedule: false}
-        process_pending_schedule(now, state)
-      else
-        state
-      end
+      state =
+        if state.has_pending_schedule do
+          Loxe.Logger.debug "has_pending_schedule set, processing scheduled events"
+          state = %{state | has_pending_schedule: false}
+          process_pending_schedule(now, state)
+        else
+          state
+        end
 
-    {:noreply, state}
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -127,21 +131,21 @@ defmodule Kaleo.Scheduler do
   end
 
   @impl true
-  def handle_info({:timer_tick, duration}, %State{} = state) do
-    Loxe.Logger.debug "ticking", duration: duration
+  def handle_info({:timer_tick, bucket_id}, %State{} = state) do
+    Loxe.Logger.debug "ticking", bucket_id: UnitFmt.format_time(bucket_id, :millisecond)
     now = DateTime.utc_now()
     state =
-      case Map.fetch(state.buckets, duration) do
+      case Map.fetch(state.buckets, bucket_id) do
         {:ok, bucket} ->
           # restart the timer immediately so it starts counting down
-          state = restart_timer(duration, :tick, state)
+          state = restart_timer(bucket_id, :tick, state)
           # process the bucket now
-          state = check_bucket_tick(now, duration, bucket, state)
+          state = check_bucket_tick(now, bucket_id, bucket, state)
 
           state
 
         :error ->
-          timers = Map.delete(state.timers, duration)
+          timers = Map.delete(state.timers, bucket_id)
           %{
             state
             | timers: timers
@@ -149,6 +153,12 @@ defmodule Kaleo.Scheduler do
       end
 
     {:noreply, state, {:continue, :after_tick}}
+  end
+
+  @impl true
+  def handle_info(message, %State{} = state) do
+    Loxe.Logger.warning "unexpected message", message: inspect(message)
+    {:noreply, state}
   end
 
   defp process_pending_schedule(%DateTime{} = now, %State{} = state) do
@@ -194,7 +204,7 @@ defmodule Kaleo.Scheduler do
 
     Loxe.Logger.debug "scheduled item",
       item_id: item_id,
-      initial_bucket_id: bucket_id,
+      bucket_id: UnitFmt.format_time(bucket_id, :millisecond),
       ready_in: UnitFmt.format_time(ready_in, :millisecond),
       ready_at: DateTime.from_unix!(ready_at, :millisecond)
 
@@ -301,11 +311,12 @@ defmodule Kaleo.Scheduler do
             bucket_id = choose_next_bucket(trigger_in, state)
             Loxe.Logger.debug "item is not ready, rescheduling",
               item_id: item_id,
-              next_bucket_id: bucket_id,
-              trigger_in: UnitFmt.format_time(trigger_in, :millisecond)
+              bucket_id: UnitFmt.format_time(bucket_id, :millisecond),
+              trigger_in: UnitFmt.format_time(trigger_in, :millisecond),
+              trigger_at: DateTime.from_unix!(trigger_at, :millisecond)
 
             true = :ets.insert(state.pending_schedule, {item_id, {:item_id, trigger_at, item_id}})
-            state
+            %{state | has_pending_schedule: true}
           end
       end
 
@@ -343,10 +354,6 @@ defmodule Kaleo.Scheduler do
   end
 
   defp restart_timer(duration, reason, %State{} = state) when is_integer(duration) do
-    Loxe.Logger.debug "restarting timer",
-      duration: duration,
-      reason: reason
-
     timers =
       case Map.pop(state.timers, duration) do
         {nil, timers} ->
@@ -360,6 +367,11 @@ defmodule Kaleo.Scheduler do
     timer_ref = Process.send_after(self(), {:timer_tick, duration}, duration)
 
     timers = Map.put(timers, duration, timer_ref)
+
+    Loxe.Logger.debug "restarted timer",
+      duration: duration,
+      reason: reason,
+      ref: timer_ref
 
     %{
       state

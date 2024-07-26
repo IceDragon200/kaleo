@@ -7,7 +7,7 @@ defmodule Kaleo.EventProcessor do
 
   alias Kaleo.Event
 
-  def process_ready_event(ready_at, event, timeout \\ 15_000) do
+  def process_ready_event(ready_at, %Event{} = event, timeout \\ 15_000) do
     GenServer.call(__MODULE__, {:process_ready_event, ready_at, event}, timeout)
   end
 
@@ -22,7 +22,7 @@ defmodule Kaleo.EventProcessor do
   end
 
   @impl true
-  def handle_call({:process_ready_event, ready_at, event}, _from, %State{} = state) do
+  def handle_call({:process_ready_event, ready_at, %Event{} = event}, _from, %State{} = state) do
     IO.inspect {:process_ready_event, ready_at, event}
 
     {_, 0} = System.cmd("notify-send", [event.name, event.notes])
