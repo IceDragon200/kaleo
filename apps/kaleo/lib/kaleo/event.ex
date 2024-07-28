@@ -1,11 +1,33 @@
 defmodule Kaleo.Event do
+  defmodule Trigger do
+    defmodule Expiration do
+      defstruct [
+        after: [],
+      ]
+
+      @type t :: %__MODULE__{
+        after: [{atom(), integer()}]
+      }
+    end
+
+    defstruct [
+      expires: nil,
+      every: [],
+    ]
+
+    @type t :: %__MODULE__{
+      expires: Expiration.t() | nil,
+      every: [{atom(), integer()}],
+    }
+  end
+
   defstruct [
     id: nil,
     name: nil,
     notes: nil,
     starts_at: nil,
     ends_at: nil,
-    every: [],
+    trigger: nil,
   ]
 
   alias __MODULE__, as: Event
@@ -16,7 +38,7 @@ defmodule Kaleo.Event do
     notes: String.t(),
     starts_at: DateTime.t() | nil,
     ends_at: DateTime.t() | nil,
-    every: [{atom(), integer()}],
+    trigger: Trigger.t() | nil
   }
 
   @type time_unit :: :day | :hour | :minute | System.time_unit()
@@ -39,11 +61,14 @@ defmodule Kaleo.Event do
     if time_until_start > 0 do
       time_until_start
     else
-      case subject.every do
-        [] ->
-          raise "event has no intervals"
+      case subject.trigger do
+        nil ->
+          raise "event has no trigger"
 
-        [{interval_unit, value}] ->
+        %Event.Trigger{every: nil} ->
+          raise "event.trigger has no intervals"
+
+        %Event.Trigger{every: [{interval_unit, value}]} ->
           interval =
             case interval_unit do
               :second -> :timer.seconds(value)

@@ -48,6 +48,7 @@ defmodule Kaleo.Scheduler do
     Loxe.Logger.metadata worker: :kaleo_scheduler
 
     bucket_durations = [
+      :timer.seconds(1),
       :timer.seconds(10),
       :timer.minutes(1),
       :timer.minutes(5),
@@ -128,11 +129,17 @@ defmodule Kaleo.Scheduler do
     state = on_config_changed(path, config, state)
 
     {:noreply, state, {:continue, :after_tick}}
+  rescue ex ->
+    Loxe.Logger.context [state: "handle_info:config_changed_event@rescue"], fn ->
+      Loxe.Logger.warning "config update failed"
+      Logger.error Exception.format(:error, ex, __STACKTRACE__)
+    end
+    {:noreply, state}
   end
 
   @impl true
   def handle_info({:timer_tick, bucket_id}, %State{} = state) do
-    Loxe.Logger.debug "ticking", bucket_id: UnitFmt.format_time(bucket_id, :millisecond)
+    # Loxe.Logger.debug "ticking", bucket_id: UnitFmt.format_time(bucket_id, :millisecond)
     now = DateTime.utc_now()
     state =
       case Map.fetch(state.buckets, bucket_id) do
@@ -236,11 +243,14 @@ defmodule Kaleo.Scheduler do
       Loxe.Logger.warning "item has already ended, skipping", item_id: item_id
       state
     else
-      case item.every do
-        [] ->
-          Loxe.Logger.info "item is not recurring, not scheduling"
+      case item.trigger do
+        nil ->
+          Loxe.Logger.info "item has no trigger"
 
-        [_ | _] ->
+        %Event.Trigger{every: []} ->
+          Loxe.Logger.info "item's trigger is not recurring"
+
+        %Event.Trigger{every: [_ | _]} ->
           add_item(now, item_id, item, state)
       end
     end
@@ -346,14 +356,16 @@ defmodule Kaleo.Scheduler do
     state =
       Enum.reduce(state.buckets, %{state | timers: %{}}, fn
         {duration, _}, %State{} = state when is_integer(duration) ->
-          Loxe.Logger.debug "starting timer", duration: duration
+          Loxe.Logger.debug "starting timer",
+            duration: UnitFmt.format_time(duration)
+
           restart_timer(duration, :init, state)
       end)
 
     state
   end
 
-  defp restart_timer(duration, reason, %State{} = state) when is_integer(duration) do
+  defp restart_timer(duration, _reason, %State{} = state) when is_integer(duration) do
     timers =
       case Map.pop(state.timers, duration) do
         {nil, timers} ->
@@ -368,10 +380,10 @@ defmodule Kaleo.Scheduler do
 
     timers = Map.put(timers, duration, timer_ref)
 
-    Loxe.Logger.debug "restarted timer",
-      duration: duration,
-      reason: reason,
-      ref: timer_ref
+    # Loxe.Logger.debug "restarted timer",
+    #   duration: duration,
+    #   reason: reason,
+    #   ref: timer_ref
 
     %{
       state
@@ -414,90 +426,41 @@ defmodule Kaleo.Scheduler do
             end)
           end)
 
-        load_events_from_paths(event_paths, state)
+        event_paths
+        |> Kaleo.EventLoader.load_events_from_paths()
+        |> Enum.reduce(state, fn {event_path, result}, %State{} = state ->
+          case result do
+            {:ok, event_results} ->
+              Enum.reduce(event_results, state, fn
+                {:ok, %Event{} = event}, %State{} = state ->
+                  case event.id do
+                    nil ->
+                      Loxe.Logger.error "invalid event, cannot add as its missing its id"
+                      state
+
+                    id when is_binary(id) ->
+                      Loxe.Logger.info "pushing event for scheduling", event_id: id
+                      true = :ets.insert(state.pending_schedule, {id, {:item, nil, event}})
+                      %{state | has_pending_schedule: true}
+                  end
+
+                {:error, reason}, %State{} = state ->
+                  Loxe.Logger.warning "bad event", reason: inspect(reason)
+                  state
+              end)
+
+            {:error, reason} ->
+              Loxe.Logger.warning "could not load events from path",
+                path: event_path,
+                reason: inspect(reason)
+
+              state
+          end
+        end)
 
       :error ->
         Loxe.Logger.warning "no event sources!"
         state
-    end
-  end
-
-  defp load_events_from_paths(event_paths, %State{} = state) when is_list(event_paths) do
-    Enum.reduce(event_paths, state, fn {event_path, opts}, %State{} = state ->
-      load_event_from_path(event_path, opts, state)
-    end)
-  end
-
-  defp load_event_from_path(path, opts, %State{} = state) do
-    Loxe.Logger.info "loading event from path", path: path
-    with \
-      {:ok, blob} <- File.read(path),
-      {:ok, document, []} <- Kuddle.decode(blob)
-    do
-      load_event_from_kdl(document, opts, state)
-    else
-      {:error, reason} ->
-        Loxe.Logger.error "could not load event", reason: inspect(reason)
-        state
-    end
-  end
-
-  alias Kuddle.Node, as: N
-
-  defp load_event_from_kdl(document, _opts, %State{} = state) when is_list(document) do
-    Enum.reduce(document, state, fn
-      %N{name: "event", children: nil}, %State{} = state ->
-        Loxe.Logger.warning "event node found, but it has no children"
-        state
-
-      %N{name: "event"} = n, %State{} = state ->
-        load_event_from_kdl_node(n, state)
-
-      %N{name: name}, %State{} = state ->
-        Loxe.Logger.warning "unexpected node", name: name
-        state
-    end)
-  end
-
-  defp load_event_from_kdl_node(%N{children: children}, %State{} = state) do
-    import Kaleo.KuddleUtil
-
-    event =
-      Enum.reduce(children, %Event{}, fn
-        %N{name: "id"} = n, %Event{} = subject ->
-          {:ok, id} = kdl_node_to_id(n)
-          %{subject | id: id}
-
-        %N{name: "name"} = n, %Event{} = subject ->
-          {:ok, name} = kdl_node_to_string(n)
-          %{subject | name: name}
-
-        %N{name: "notes"} = n, %Event{} = subject ->
-          {:ok, notes} = kdl_node_to_string(n)
-          %{subject | notes: notes}
-
-        %N{name: "starts_at"} = n, %Event{} = subject ->
-          {:ok, starts_at} = kdl_node_to_datetime(n)
-          %{subject | starts_at: starts_at}
-
-        %N{name: "ends_at"} = n, %Event{} = subject ->
-          {:ok, ends_at} = kdl_node_to_datetime(n)
-          %{subject | ends_at: ends_at}
-
-        %N{name: "every"} = n, %Event{} = subject ->
-          {:ok, every} = kdl_node_to_interval(n)
-          %{subject | every: every}
-      end)
-
-    case event.id do
-      nil ->
-        Loxe.Logger.error "invalid event, cannot add as its missing its id"
-        state
-
-      id when is_binary(id) ->
-        Loxe.Logger.info "pushing event for scheduling", event_id: id
-        true = :ets.insert(state.pending_schedule, {id, {:item, nil, event}})
-        %{state | has_pending_schedule: true}
     end
   end
 end

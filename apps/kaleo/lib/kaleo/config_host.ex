@@ -55,7 +55,7 @@ defmodule Kaleo.ConfigHost do
 
     state = set_check_config_timer(state)
 
-    {:ok, state, {:continue, :load_config}}
+    {:ok, state, {:continue, {:load_config, :init}}}
   end
 
   @impl true
@@ -65,7 +65,7 @@ defmodule Kaleo.ConfigHost do
   end
 
   @impl true
-  def handle_continue(:load_config, %State{} = state) do
+  def handle_continue({:load_config, _reason}, %State{} = state) do
     state = %{state | config: []}
 
     if state.config_path do
@@ -107,7 +107,7 @@ defmodule Kaleo.ConfigHost do
 
   @impl true
   def handle_call(:reload_config, _from, %State{} = state) do
-    {:reply, :ok, state, {:continue, :load_config}}
+    {:reply, :ok, state, {:continue, {:load_config, :reload}}}
   end
 
   @impl true
@@ -143,7 +143,6 @@ defmodule Kaleo.ConfigHost do
 
   @impl true
   def handle_info(:check_config, %State{} = state) do
-    Loxe.Logger.debug "checking config"
     state = set_check_config_timer(state)
 
     case File.stat(state.config_path) do
@@ -151,7 +150,7 @@ defmodule Kaleo.ConfigHost do
         case compare_file_stats(state.last_stat, stat) do
           :changed ->
             Loxe.Logger.info "config has changed"
-            {:noreply, state, {:continue, :load_config}}
+            {:noreply, state, {:continue, {:load_config, :changed}}}
 
           :unchanged ->
             Loxe.Logger.debug "config is unchanged"

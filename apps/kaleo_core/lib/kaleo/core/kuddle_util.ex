@@ -97,53 +97,68 @@ defmodule Kaleo.KuddleUtil do
     err
   end
 
-  def kdl_node_to_interval(%N{children: children}) when is_list(children) do
-    {:ok, Enum.map(children, fn
-      %N{name: "second"} = n ->
-        case kdl_node_to_integer(n) do
-          {:ok, value} ->
-            {:second, value}
+  @interval_mapping %{
+    "second" => :second,
+    "minute" => :minute,
+    "hour" => :hour,
+    "day" => :day,
+    "week" => :week,
+  }
 
-          {:error, _} = err ->
-            throw err
-        end
+  def kdl_node_to_interval(%N{attributes: attributes, children: children}) do
+    result = []
 
-      %N{name: "minute"} = n ->
-        case kdl_node_to_integer(n) do
-          {:ok, value} ->
-            {:minute, value}
+    result =
+      case children do
+        nil ->
+          result
 
-          {:error, _} = err ->
-            throw err
-        end
+        [] ->
+          result
 
-      %N{name: "hour"} = n ->
-        case kdl_node_to_integer(n) do
-          {:ok, value} ->
-            {:hour, value}
+        children when is_list(children) ->
+          result ++ Enum.map(children, fn %N{name: name} = n ->
+            case Map.fetch(@interval_mapping, name) do
+              {:ok, name} ->
+                case kdl_node_to_integer(n) do
+                  {:ok, value} ->
+                    {name, value}
 
-          {:error, _} = err ->
-            throw err
-        end
+                  {:error, _} = err ->
+                    throw err
+                end
 
-      %N{name: "day"} = n ->
-        case kdl_node_to_integer(n) do
-          {:ok, value} ->
-            {:day, value}
+              :error ->
+                throw {:error, {:invalid_interval, name}}
+            end
+          end)
+      end
 
-          {:error, _} = err ->
-            throw err
-        end
+    result =
+      case attributes do
+        nil ->
+          result
 
-      %N{name: "week"} = n ->
-        case kdl_node_to_integer(n) do
-          {:ok, value} ->
-            {:week, value}
+        [] ->
+          result
 
-          {:error, _} = err ->
-            throw err
-        end
-    end)}
+        attributes when is_list(attributes) ->
+          Enum.map(attributes, fn
+            {%V{value: name}, %V{type: :integer, value: value}} ->
+              case Map.fetch(@interval_mapping, name) do
+                {:ok, name} ->
+                  {name, value}
+
+                :error ->
+                  throw {:error, {:invalid_interval, name}}
+              end
+
+            value ->
+              throw {:error, {:unexpected_attribute, value}}
+          end)
+      end
+
+    {:ok, result}
   catch {:error, _} = err ->
     err
   end
