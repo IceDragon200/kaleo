@@ -1,4 +1,4 @@
-defmodule Kaleo.Event do
+defmodule Kaleo.Item do
   defmodule Trigger do
     defmodule Expiration do
       defstruct [
@@ -30,9 +30,9 @@ defmodule Kaleo.Event do
     trigger: nil,
   ]
 
-  alias __MODULE__, as: Event
+  alias __MODULE__, as: Item
 
-  @type t :: %Event{
+  @type t :: %Item{
     id: String.t(),
     name: String.t(),
     notes: String.t(),
@@ -48,7 +48,7 @@ defmodule Kaleo.Event do
     DateTime.t(),
     time_unit()
   ) :: number()
-  def time_until_next_trigger(%Event{} = subject, now, unit \\ :millisecond) do
+  def time_until_next_trigger(%Item{} = subject, now, unit \\ :millisecond) do
     time_until_start =
       case time_to_start(subject, now, :millisecond) do
         nil ->
@@ -63,12 +63,12 @@ defmodule Kaleo.Event do
     else
       case subject.trigger do
         nil ->
-          raise "event has no trigger"
+          raise "item has no trigger"
 
-        %Event.Trigger{every: nil} ->
-          raise "event.trigger has no intervals"
+        %Item.Trigger{every: nil} ->
+          raise "item.trigger has no intervals"
 
-        %Event.Trigger{every: [{interval_unit, value}]} ->
+        %Item.Trigger{every: [{interval_unit, value}]} ->
           interval =
             case interval_unit do
               :second -> :timer.seconds(value)
@@ -115,7 +115,7 @@ defmodule Kaleo.Event do
     DateTime.t(),
     time_unit()
   ) :: integer() | nil
-  def time_to_start(%Event{} = subject, now, unit \\ :millisecond) do
+  def time_to_start(%Item{} = subject, now, unit \\ :millisecond) do
     case subject.starts_at do
       nil ->
         nil
@@ -130,7 +130,7 @@ defmodule Kaleo.Event do
     DateTime.t(),
     time_unit()
   ) :: integer() | nil
-  def time_to_end(%Event{} = subject, now, unit \\ :millisecond) do
+  def time_to_end(%Item{} = subject, now, unit \\ :millisecond) do
     case subject.ends_at do
       nil ->
         nil
@@ -141,7 +141,7 @@ defmodule Kaleo.Event do
   end
 
   @spec started?(t(), DateTime.t()) :: boolean()
-  def started?(%Event{} = subject, now) do
+  def started?(%Item{} = subject, now) do
     case time_to_start(subject, now, :millisecond) do
       nil ->
         true
@@ -152,7 +152,7 @@ defmodule Kaleo.Event do
   end
 
   @spec ended?(t(), DateTime.t()) :: boolean()
-  def ended?(%Event{} = subject, now) do
+  def ended?(%Item{} = subject, now) do
     case time_to_end(subject, now, :millisecond) do
       nil ->
         false

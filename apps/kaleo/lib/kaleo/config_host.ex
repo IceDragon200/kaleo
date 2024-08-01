@@ -129,12 +129,13 @@ defmodule Kaleo.ConfigHost do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, pid}, %State{} = state) do
+  def handle_info({:DOWN, _ref, :process, pid, reason}, %State{} = state) do
     case :ets.take(state.config_watchers, pid) do
       [] ->
         :ok
 
       [{^pid, ref}] ->
+        Loxe.Logger.warning "a process is down", ref: ref, pid: pid, reason: inspect(reason)
         Process.demonitor(ref)
     end
 
@@ -153,7 +154,7 @@ defmodule Kaleo.ConfigHost do
             {:noreply, state, {:continue, {:load_config, :changed}}}
 
           :unchanged ->
-            Loxe.Logger.debug "config is unchanged"
+            # Loxe.Logger.debug "config is unchanged"
             {:noreply, state}
         end
 

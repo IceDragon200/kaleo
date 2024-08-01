@@ -15,7 +15,7 @@ defmodule Kaleo.Application do
       # Start the Finch HTTP client for sending emails
       # {Finch, name: Kaleo.Finch}
       # Start a worker by calling: Kaleo.Worker.start_link(arg)
-      Kaleo.EventProcessor,
+      Kaleo.ItemProcessor,
       Kaleo.Scheduler,
     ]
 

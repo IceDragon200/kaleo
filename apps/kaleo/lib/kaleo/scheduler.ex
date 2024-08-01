@@ -9,8 +9,15 @@ defmodule Kaleo.Scheduler do
       bucket_durations: [],
       buckets: %{},
       timers: %{},
+      # In case the system is suspended and resumes, the buckets may need to be force flushed
+      # and reset.
+      # The drift timer runs every second to determine how far as the last system time has
+      # changed, if it exceeds a certain threshold
+      last_drift_tick_at: nil,
+      drift_timer_ref: nil,
       has_ready: false,
       has_pending_schedule: false,
+      has_drift: false,
     ]
 
     @type t :: %__MODULE__{
@@ -26,18 +33,27 @@ defmodule Kaleo.Scheduler do
       timers: %{
         timeout() => reference(),
       },
+      last_drift_tick_at: integer(),
+      drift_timer_ref: reference() | nil,
       has_ready: boolean(),
       has_pending_schedule: boolean(),
+      has_drift: boolean(),
     }
   end
 
   use Loxe.Logger
   use GenServer
 
-  alias Kaleo.Event
+  alias Kaleo.Item
 
   import Kaleo.ConfigUtil
   import Kaleo.Core.Util
+
+  import Record
+
+  defrecord :event_item,
+    item_id: nil,
+    ready_at: nil
 
   def start_link(_) do
     GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
@@ -101,6 +117,15 @@ defmodule Kaleo.Scheduler do
       now = DateTime.utc_now()
 
       state =
+        if state.has_drift do
+          Loxe.Logger.debug "has_drift set, rescheduling all buckets"
+          state = %{state | has_drift: false}
+          reschedule_all_buckets(now, state)
+        else
+          state
+        end
+
+      state =
         if state.has_ready do
           Loxe.Logger.debug "has_ready set, processing ready events"
           state = %{state | has_ready: false}
@@ -138,6 +163,35 @@ defmodule Kaleo.Scheduler do
   end
 
   @impl true
+  def handle_info(:drift_timer_tick, %State{} = state) do
+    state = restart_drift_timer(state)
+    # Yes, we use system time here because the system itself may suspend and resume at any time
+    # causing schedules to go out of sync
+    now_ms = System.system_time(:millisecond)
+
+    state =
+      if state.last_drift_tick_at do
+        diff_ms = now_ms - state.last_drift_tick_at
+
+        state = %{state | last_drift_tick_at: now_ms}
+
+        if diff_ms > 5000 do
+          Loxe.Logger.warning "detected time drift, marking for drift correction",
+            diff: UnitFmt.format_time(diff_ms, :millisecond)
+
+          # we have drifted a over the threshold
+          %{state | has_drift: true}
+        else
+          state
+        end
+      else
+        %{state | last_drift_tick_at: now_ms}
+      end
+
+    {:noreply, state, {:continue, :after_tick}}
+  end
+
+  @impl true
   def handle_info({:timer_tick, bucket_id}, %State{} = state) do
     # Loxe.Logger.debug "ticking", bucket_id: UnitFmt.format_time(bucket_id, :millisecond)
     now = DateTime.utc_now()
@@ -168,6 +222,20 @@ defmodule Kaleo.Scheduler do
     {:noreply, state}
   end
 
+  defp reschedule_all_buckets(now, %State{} = state) do
+    state =
+      Enum.reduce(state.buckets, state, fn {bucket_id, bucket}, %State{} = state ->
+        # restart the timer immediately so it starts counting down
+        state = restart_timer(bucket_id, :tick, state)
+        # process the bucket now
+        state = check_bucket_tick(now, bucket_id, bucket, state)
+
+        state
+      end)
+
+    state
+  end
+
   defp process_pending_schedule(%DateTime{} = now, %State{} = state) do
     try do
       true = :ets.safe_fixtable(state.pending_schedule, true)
@@ -192,7 +260,7 @@ defmodule Kaleo.Scheduler do
         [] ->
           state
 
-        [{item_id, {:item, nil, %Event{} = item}}] ->
+        [{item_id, {:item, nil, %Item{} = item}}] ->
           schedule_item(now, item_id, item, state)
 
         [{item_id, {:item_id, ready_at, item_id}}] ->
@@ -207,7 +275,8 @@ defmodule Kaleo.Scheduler do
     ready_in = max(ready_at - now_unix, 0)
     bucket_id = choose_next_bucket(ready_in, state)
 
-    true = :ets.insert(state.buckets[bucket_id], {item_id, {ready_at, item_id}})
+    obj = event_item(ready_at: ready_at, item_id: item_id)
+    true = :ets.insert(state.buckets[bucket_id], {item_id, obj})
 
     Loxe.Logger.debug "scheduled item",
       item_id: item_id,
@@ -218,19 +287,19 @@ defmodule Kaleo.Scheduler do
     state
   end
 
-  defp add_item(%DateTime{} = now, item_id, %Event{} = item, %State{} = state) do
+  defp add_item(%DateTime{} = now, item_id, %Item{} = item, %State{} = state) do
     true = :ets.insert(state.items, {item_id, item})
 
-    ready_in = Event.time_until_next_trigger(item, now, :millisecond)
+    ready_in = Item.time_until_next_trigger(item, now, :millisecond)
     now_unix = DateTime.to_unix(now, :millisecond)
     ready_at = now_unix + ready_in
 
     schedule_item_id_with_ready_at(ready_at, now, item_id, state)
   end
 
-  @spec schedule_item(DateTime.t(), String.t(), Event.t(), State.t()) :: State.t()
-  defp schedule_item(now, item_id, %Event{} = item, %State{} = state) do
-    if Event.ended?(item, now) do
+  @spec schedule_item(DateTime.t(), String.t(), Item.t(), State.t()) :: State.t()
+  defp schedule_item(now, item_id, %Item{} = item, %State{} = state) do
+    if Item.ended?(item, now) do
       Loxe.Logger.warning "scheduled item has already ended, skipping", item_id: item_id
       state
     else
@@ -238,8 +307,8 @@ defmodule Kaleo.Scheduler do
     end
   end
 
-  defp maybe_schedule_item(now, item_id, %Event{} = item, %State{} = state) do
-    if Event.ended?(item, now) do
+  defp maybe_schedule_item(now, item_id, %Item{} = item, %State{} = state) do
+    if Item.ended?(item, now) do
       Loxe.Logger.warning "item has already ended, skipping", item_id: item_id
       state
     else
@@ -247,10 +316,10 @@ defmodule Kaleo.Scheduler do
         nil ->
           Loxe.Logger.info "item has no trigger"
 
-        %Event.Trigger{every: []} ->
+        %Item.Trigger{every: []} ->
           Loxe.Logger.info "item's trigger is not recurring"
 
-        %Event.Trigger{every: [_ | _]} ->
+        %Item.Trigger{every: [_ | _]} ->
           add_item(now, item_id, item, state)
       end
     end
@@ -275,14 +344,14 @@ defmodule Kaleo.Scheduler do
         [] ->
           state
 
-        [{^key, {ready_at, item_id}}] ->
+        [{^key, event_item(ready_at: ready_at, item_id: item_id)}] ->
           case :ets.lookup(state.items, item_id) do
             [] ->
               Loxe.Logger.warning "item not found", item_id: item_id
               state
 
-            [{^item_id, %Event{} = item}] ->
-              {:ok, _ref} = Kaleo.EventProcessor.process_ready_event(ready_at, item)
+            [{^item_id, %Item{} = item}] ->
+              {:ok, _ref} = Kaleo.ItemProcessor.process_ready_event(ready_at, item)
               maybe_schedule_item(now, item_id, item, state)
           end
       end
@@ -310,22 +379,22 @@ defmodule Kaleo.Scheduler do
           Loxe.Logger.warning "key missing from tick bucket", key: inspect(key)
           state
 
-        [{^key, {trigger_at, item_id}}] ->
+        [{^key, event_item(ready_at: ready_at, item_id: item_id)}] ->
           now_unix = DateTime.to_unix(now, :millisecond)
-          trigger_in = trigger_at - now_unix
-          if trigger_in <= 0 do
+          ready_in = ready_at - now_unix
+          if ready_in <= 0 do
             Loxe.Logger.info "an item is ready", item_id: item_id
-            true = :ets.insert(state.ready, {item_id, {now, item_id}})
+            true = :ets.insert(state.ready, {item_id, event_item(ready_at: now, item_id: item_id)})
             %{state | has_ready: true}
           else
-            bucket_id = choose_next_bucket(trigger_in, state)
+            bucket_id = choose_next_bucket(ready_in, state)
             Loxe.Logger.debug "item is not ready, rescheduling",
               item_id: item_id,
               bucket_id: UnitFmt.format_time(bucket_id, :millisecond),
-              trigger_in: UnitFmt.format_time(trigger_in, :millisecond),
-              trigger_at: DateTime.from_unix!(trigger_at, :millisecond)
+              ready_in: UnitFmt.format_time(ready_in, :millisecond),
+              ready_at: DateTime.from_unix!(ready_at, :millisecond)
 
-            true = :ets.insert(state.pending_schedule, {item_id, {:item_id, trigger_at, item_id}})
+            true = :ets.insert(state.pending_schedule, {item_id, {:item_id, ready_at, item_id}})
             %{state | has_pending_schedule: true}
           end
       end
@@ -362,7 +431,22 @@ defmodule Kaleo.Scheduler do
           restart_timer(duration, :init, state)
       end)
 
+    Loxe.Logger.debug "starting drift timer"
+    state = restart_drift_timer(state)
     state
+  end
+
+  defp restart_drift_timer(%State{} = state) do
+    if state.drift_timer_ref do
+      Process.cancel_timer(state.drift_timer_ref)
+    end
+
+    timer_ref = Process.send_after(self(), :drift_timer_tick, :timer.seconds(1))
+
+    %{
+      state
+      | drift_timer_ref: timer_ref
+    }
   end
 
   defp restart_timer(duration, _reason, %State{} = state) when is_integer(duration) do
@@ -392,25 +476,25 @@ defmodule Kaleo.Scheduler do
   end
 
   defp on_config_changed(path, config, %State{} = state) do
-    case Keyword.fetch(config, :events) do
-      {:ok, events} ->
-        reload_events(%{state | config_path: path, config: events})
+    case Keyword.fetch(config, :items) do
+      {:ok, items} ->
+        reload_items(%{state | config_path: path, config: items})
 
       :error ->
         state
     end
   end
 
-  defp reload_events(%State{} = state) do
-    # Events is a section name
+  defp reload_items(%State{} = state) do
+    # Items is a section name
     # it should contain a :sources key which is a id-ed list of paths that should be checked
     # for files
     dirname = Path.dirname(state.config_path)
 
-    Loxe.Logger.info "reloading events", config_dirname: dirname
+    Loxe.Logger.info "reloading items", config_dirname: dirname
     case Keyword.fetch(state.config, :sources) do
       {:ok, sources} ->
-        event_paths =
+        paths =
           Enum.reduce(sources, [], fn {id, opts}, acc ->
             path_opts = [source_id: id]
             Enum.reduce(opts, acc, fn
@@ -426,32 +510,32 @@ defmodule Kaleo.Scheduler do
             end)
           end)
 
-        event_paths
-        |> Kaleo.EventLoader.load_events_from_paths()
-        |> Enum.reduce(state, fn {event_path, result}, %State{} = state ->
+        paths
+        |> Kaleo.ItemLoader.load_items_from_paths()
+        |> Enum.reduce(state, fn {path, result}, %State{} = state ->
           case result do
-            {:ok, event_results} ->
-              Enum.reduce(event_results, state, fn
-                {:ok, %Event{} = event}, %State{} = state ->
-                  case event.id do
+            {:ok, results} ->
+              Enum.reduce(results, state, fn
+                {:ok, %Item{} = subject}, %State{} = state ->
+                  case subject.id do
                     nil ->
-                      Loxe.Logger.error "invalid event, cannot add as its missing its id"
+                      Loxe.Logger.error "invalid item, cannot add as its missing its id"
                       state
 
                     id when is_binary(id) ->
-                      Loxe.Logger.info "pushing event for scheduling", event_id: id
-                      true = :ets.insert(state.pending_schedule, {id, {:item, nil, event}})
+                      Loxe.Logger.info "pushing item for scheduling", item_id: id
+                      true = :ets.insert(state.pending_schedule, {id, {:item, nil, subject}})
                       %{state | has_pending_schedule: true}
                   end
 
                 {:error, reason}, %State{} = state ->
-                  Loxe.Logger.warning "bad event", reason: inspect(reason)
+                  Loxe.Logger.warning "bad item", reason: inspect(reason)
                   state
               end)
 
             {:error, reason} ->
-              Loxe.Logger.warning "could not load events from path",
-                path: event_path,
+              Loxe.Logger.warning "could not load items from path",
+                path: path,
                 reason: inspect(reason)
 
               state
@@ -459,7 +543,7 @@ defmodule Kaleo.Scheduler do
         end)
 
       :error ->
-        Loxe.Logger.warning "no event sources!"
+        Loxe.Logger.warning "no item sources!"
         state
     end
   end
