@@ -361,7 +361,7 @@ defmodule Kaleo.Scheduler do
         [] ->
           state
 
-        [{^key, event_item(ready_at: ready_at_unix, item_id: item_id) = ev_item}] ->
+        [{^key, event_item(ready_at: ready_at_ms, item_id: item_id) = ev_item}] ->
           case :ets.lookup(state.items, item_id) do
             [] ->
               Loxe.Logger.warning "item not found", item_id: item_id
@@ -370,7 +370,7 @@ defmodule Kaleo.Scheduler do
             [{^item_id, %Item{} = item}] ->
               case status do
                 :ready ->
-                  {:ok, ready_at} = DateTime.from_unix(ready_at_unix, :millisecond)
+                  {:ok, ready_at} = DateTime.from_unix(ready_at_ms, :millisecond)
                   if Item.trigger_expired?(item, ready_at, now) do
                     Loxe.Logger.warning "event item has expired",
                       item_id: item_id,
@@ -411,12 +411,12 @@ defmodule Kaleo.Scheduler do
           Loxe.Logger.warning "key missing from tick bucket", key: inspect(key)
           state
 
-        [{^key, event_item(ready_at: ready_at, item_id: item_id)}] ->
+        [{^key, event_item(ready_at: ready_at, item_id: item_id) = ev_item}] ->
           now_unix = DateTime.to_unix(now, :millisecond)
           ready_in = ready_at - now_unix
           if ready_in <= 0 do
             Loxe.Logger.info "an item is ready", item_id: item_id
-            true = :ets.insert(state.ready, {item_id, event_item(ready_at: now, item_id: item_id)})
+            true = :ets.insert(state.ready, {item_id, ev_item})
             %{state | has_ready: true}
           else
             bucket_id = choose_next_bucket(ready_in, state)
