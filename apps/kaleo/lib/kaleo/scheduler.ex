@@ -4,6 +4,8 @@ defmodule Kaleo.Scheduler do
     """
 
     defstruct [
+      config_host_pid: nil,
+      config_host_mon_ref: nil,
       config_path: nil,
       config: nil,
       items: nil,
@@ -26,6 +28,8 @@ defmodule Kaleo.Scheduler do
     ]
 
     @type t :: %__MODULE__{
+      config_host_pid: pid() | nil,
+      config_host_mon_ref: reference() | nil,
       config_path: Path.t(),
       config: Keyword.t(),
       items: :ets.table(),
@@ -84,6 +88,8 @@ defmodule Kaleo.Scheduler do
 
     bucket_durations = Enum.sort(bucket_durations)
 
+    Loxe.Logger.info "watching config"
+
     state = %State{
       items: :ets.new(:items, [:set, :private]),
       pending_schedule: :ets.new(:pending_schedule, [:set, :private]),
@@ -97,7 +103,7 @@ defmodule Kaleo.Scheduler do
 
     Loxe.Logger.info "initialized"
 
-    Kaleo.ConfigHost.watch_config()
+    state = monitor_config(state)
 
     {:ok, state, {:continue, :start_timers}}
   end
@@ -234,9 +240,34 @@ defmodule Kaleo.Scheduler do
   end
 
   @impl true
+  def handle_info(
+    {:DOWN, ref, :process, pid, reason},
+    %State{config_host_mon_ref: ref, config_host_pid: pid} = state
+  ) do
+    Loxe.Logger.warning "config host is down", pid: pid
+
+    state = monitor_config(state)
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(message, %State{} = state) do
     Loxe.Logger.warning "unexpected message", message: inspect(message)
     {:noreply, state}
+  end
+
+  defp monitor_config(%State{} = state) do
+    if state.config_host_mon_ref do
+      Process.demonitor(state.config_host_mon_ref)
+    end
+    {:ok, config_host_pid} = Kaleo.ConfigHost.watch_config()
+    ref = Process.monitor(config_host_pid)
+
+    state = %{
+      state
+      | config_host_pid: config_host_pid,
+        config_host_mon_ref: ref,
+    }
   end
 
   defp reschedule_all_buckets(now, %State{} = state) do

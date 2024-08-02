@@ -26,10 +26,12 @@ defmodule Kaleo.ConfigHost do
     GenServer.call(__MODULE__, :reload_config, timeout)
   end
 
+  @spec watch_config() :: {:ok, config_host_pid::pid()}
   def watch_config do
     watch_config(self())
   end
 
+  @spec watch_config(pid(), timeout()) :: {:ok, config_host_pid::pid()}
   def watch_config(pid, timeout \\ 15_000) do
     GenServer.call(__MODULE__, {:watch_config, pid}, timeout)
   end
