@@ -1,11 +1,15 @@
 defmodule Kaleo.Scheduler do
   defmodule State do
+    @moduledoc """
+    """
+
     defstruct [
       config_path: nil,
       config: nil,
       items: nil,
       pending_schedule: nil,
       ready: nil,
+      expired: nil,
       bucket_durations: [],
       buckets: %{},
       timers: %{},
@@ -16,6 +20,7 @@ defmodule Kaleo.Scheduler do
       last_drift_tick_at: nil,
       drift_timer_ref: nil,
       has_ready: false,
+      has_expired: false,
       has_pending_schedule: false,
       has_drift: false,
     ]
@@ -26,6 +31,7 @@ defmodule Kaleo.Scheduler do
       items: :ets.table(),
       pending_schedule: :ets.table(),
       ready: :ets.table(),
+      expired: :ets.table(),
       bucket_durations: [timeout()],
       buckets: %{
         timeout() => :ets.table(),
@@ -36,6 +42,7 @@ defmodule Kaleo.Scheduler do
       last_drift_tick_at: integer(),
       drift_timer_ref: reference() | nil,
       has_ready: boolean(),
+      has_expired: boolean(),
       has_pending_schedule: boolean(),
       has_drift: boolean(),
     }
@@ -81,6 +88,7 @@ defmodule Kaleo.Scheduler do
       items: :ets.new(:items, [:set, :private]),
       pending_schedule: :ets.new(:pending_schedule, [:set, :private]),
       ready: :ets.new(:ready, [:set, :private]),
+      expired: :ets.new(:expired, [:set, :private]),
       bucket_durations: bucket_durations,
       buckets: Enum.reduce(bucket_durations, %{}, fn duration, acc ->
         Map.put(acc, duration, :ets.new(:bucket, [:set, :private]))
@@ -129,7 +137,16 @@ defmodule Kaleo.Scheduler do
         if state.has_ready do
           Loxe.Logger.debug "has_ready set, processing ready events"
           state = %{state | has_ready: false}
-          process_ready_bucket(now, state)
+          process_ready_bucket(:ready, now, state)
+        else
+          state
+        end
+
+      state =
+        if state.has_expired do
+          Loxe.Logger.debug "has_expired set, processing expired events"
+          state = %{state | has_expired: false}
+          process_ready_bucket(:expired, now, state)
         else
           state
         end
@@ -307,7 +324,7 @@ defmodule Kaleo.Scheduler do
     end
   end
 
-  defp maybe_schedule_item(now, item_id, %Item{} = item, %State{} = state) do
+  defp maybe_schedule_item(%DateTime{} = now, item_id, %Item{} = item, %State{} = state) do
     if Item.ended?(item, now) do
       Loxe.Logger.warning "item has already ended, skipping", item_id: item_id
       state
@@ -325,38 +342,53 @@ defmodule Kaleo.Scheduler do
     end
   end
 
-  defp process_ready_bucket(now, %State{} = state) do
+  defp process_ready_bucket(status, now, %State{} = state) do
     try do
       true = :ets.safe_fixtable(state.ready, true)
-      reduce_ready_bucket(now, state.ready, :ets.first(state.ready), state)
+      reduce_ready_bucket(status, now, state.ready, :ets.first(state.ready), state)
     after
       true = :ets.safe_fixtable(state.ready, false)
     end
   end
 
-  defp reduce_ready_bucket(_now, _table, :"$end_of_table", %State{} = state) do
+  defp reduce_ready_bucket(_status, _now, _table, :"$end_of_table", %State{} = state) do
     state
   end
 
-  defp reduce_ready_bucket(now, table, key, %State{} = state) do
+  defp reduce_ready_bucket(status, %DateTime{} = now, table, key, %State{} = state) do
     state =
       case :ets.take(table, key) do
         [] ->
           state
 
-        [{^key, event_item(ready_at: ready_at, item_id: item_id)}] ->
+        [{^key, event_item(ready_at: ready_at_unix, item_id: item_id) = ev_item}] ->
           case :ets.lookup(state.items, item_id) do
             [] ->
               Loxe.Logger.warning "item not found", item_id: item_id
               state
 
             [{^item_id, %Item{} = item}] ->
-              {:ok, _ref} = Kaleo.ItemProcessor.process_ready_event(ready_at, item)
-              maybe_schedule_item(now, item_id, item, state)
+              case status do
+                :ready ->
+                  {:ok, ready_at} = DateTime.from_unix(ready_at_unix, :millisecond)
+                  if Item.trigger_expired?(item, ready_at, now) do
+                    Loxe.Logger.warning "event item has expired",
+                      item_id: item_id,
+                      ready_at: ready_at
+
+                    true = :ets.insert(state.expired, {item_id, ev_item})
+                  else
+                    {:ok, _ref} = Kaleo.ItemProcessor.process_ready_event(ready_at, item)
+                  end
+                  maybe_schedule_item(now, item_id, item, state)
+
+                :expired ->
+                  state
+              end
           end
       end
 
-    reduce_ready_bucket(now, table, :ets.next(table, key), state)
+    reduce_ready_bucket(status, now, table, :ets.next(table, key), state)
   end
 
   defp check_bucket_tick(now, duration, bucket, %State{} = state) do

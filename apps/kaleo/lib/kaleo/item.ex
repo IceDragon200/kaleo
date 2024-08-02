@@ -43,12 +43,25 @@ defmodule Kaleo.Item do
 
   @type time_unit :: :day | :hour | :minute | System.time_unit()
 
+  @spec interval_list_to_ms([integer()]) :: integer()
+  def interval_list_to_ms(list) do
+    Enum.reduce(list, 0, fn {interval_unit, value}, acc ->
+      acc + case interval_unit do
+        :second -> :timer.seconds(value)
+        :minute -> :timer.minutes(value)
+        :hour -> :timer.hours(value)
+        :day -> :timer.hours(24 * value)
+        :week -> :timer.hours(7 * 24 * value)
+      end
+    end)
+  end
+
   @spec time_until_next_trigger(
     t(),
     DateTime.t(),
     time_unit()
   ) :: number()
-  def time_until_next_trigger(%Item{} = subject, now, unit \\ :millisecond) do
+  def time_until_next_trigger(%Item{} = subject, %DateTime{} = now, unit \\ :millisecond) do
     time_until_start =
       case time_to_start(subject, now, :millisecond) do
         nil ->
@@ -68,15 +81,8 @@ defmodule Kaleo.Item do
         %Item.Trigger{every: nil} ->
           raise "item.trigger has no intervals"
 
-        %Item.Trigger{every: [{interval_unit, value}]} ->
-          interval =
-            case interval_unit do
-              :second -> :timer.seconds(value)
-              :minute -> :timer.minutes(value)
-              :hour -> :timer.hours(value)
-              :day -> :timer.hours(24 * value)
-              :week -> :timer.hours(7 * 24 * value)
-            end
+        %Item.Trigger{every: every} when is_list(every) ->
+          interval = interval_list_to_ms(every)
 
           time_since_start =
             case subject.starts_at do
@@ -115,7 +121,7 @@ defmodule Kaleo.Item do
     DateTime.t(),
     time_unit()
   ) :: integer() | nil
-  def time_to_start(%Item{} = subject, now, unit \\ :millisecond) do
+  def time_to_start(%Item{} = subject, %DateTime{} = now, unit \\ :millisecond) do
     case subject.starts_at do
       nil ->
         nil
@@ -130,7 +136,7 @@ defmodule Kaleo.Item do
     DateTime.t(),
     time_unit()
   ) :: integer() | nil
-  def time_to_end(%Item{} = subject, now, unit \\ :millisecond) do
+  def time_to_end(%Item{} = subject, %DateTime{} = now, unit \\ :millisecond) do
     case subject.ends_at do
       nil ->
         nil
@@ -141,7 +147,7 @@ defmodule Kaleo.Item do
   end
 
   @spec started?(t(), DateTime.t()) :: boolean()
-  def started?(%Item{} = subject, now) do
+  def started?(%Item{} = subject, %DateTime{} = now) do
     case time_to_start(subject, now, :millisecond) do
       nil ->
         true
@@ -152,13 +158,32 @@ defmodule Kaleo.Item do
   end
 
   @spec ended?(t(), DateTime.t()) :: boolean()
-  def ended?(%Item{} = subject, now) do
+  def ended?(%Item{} = subject, %DateTime{} = now) do
     case time_to_end(subject, now, :millisecond) do
       nil ->
         false
 
       val when is_integer(val) ->
         val <= 0
+    end
+  end
+
+  @spec trigger_expired?(t(), ready_at::DateTime.t(), now::DateTime.t()) :: boolean()
+  def trigger_expired?(%Item{} = subject, %DateTime{} = ready_at, %DateTime{} = now) do
+    case subject.trigger do
+      nil ->
+        false
+
+      %Trigger{} = subject ->
+        case subject.expires do
+          nil ->
+            false
+
+          %Trigger.Expiration{} = subject ->
+            after_ms = interval_list_to_ms(subject.after)
+
+            DateTime.diff(now, ready_at, :millisecond) >= after_ms
+        end
     end
   end
 end
