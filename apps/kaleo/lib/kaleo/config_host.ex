@@ -40,6 +40,10 @@ defmodule Kaleo.ConfigHost do
     GenServer.call(__MODULE__, :get_config, timeout)
   end
 
+  def stop(reason \\ :normal, timeout \\ :infinity) do
+    GenServer.stop(__MODULE__, reason, timeout)
+  end
+
   def start_link(_) do
     GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
   end
@@ -127,7 +131,7 @@ defmodule Kaleo.ConfigHost do
 
     send(pid, config_changed_event(path: state.config_path, config: state.config))
 
-    {:reply, self(), state}
+    {:reply, {:ok, self()}, state}
   end
 
   @impl true

@@ -27,6 +27,8 @@ defmodule Kaleo.Scheduler do
       has_drift: false,
     ]
 
+    @type time_ms :: integer()
+
     @type t :: %__MODULE__{
       config_host_pid: pid() | nil,
       config_host_mon_ref: reference() | nil,
@@ -36,14 +38,14 @@ defmodule Kaleo.Scheduler do
       pending_schedule: :ets.table(),
       ready: :ets.table(),
       expired: :ets.table(),
-      bucket_durations: [timeout()],
+      bucket_durations: [time_ms()],
       buckets: %{
-        timeout() => :ets.table(),
+        time_ms() => :ets.table(),
       },
       timers: %{
-        timeout() => reference(),
+        time_ms() => {started_at::time_ms(), reference()},
       },
-      last_drift_tick_at: integer(),
+      last_drift_tick_at: time_ms(),
       drift_timer_ref: reference() | nil,
       has_ready: boolean(),
       has_expired: boolean(),
@@ -65,6 +67,10 @@ defmodule Kaleo.Scheduler do
   defrecord :event_item,
     item_id: nil,
     ready_at: nil
+
+  def stop(reason \\ :normal, timeout \\ :infinity) do
+    GenServer.stop(__MODULE__, reason, timeout)
+  end
 
   def start_link(_) do
     GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
@@ -244,7 +250,7 @@ defmodule Kaleo.Scheduler do
     {:DOWN, ref, :process, pid, reason},
     %State{config_host_mon_ref: ref, config_host_pid: pid} = state
   ) do
-    Loxe.Logger.warning "config host is down", pid: pid
+    Loxe.Logger.warning "config host is down", pid: pid, reason: inspect(reason)
 
     state = monitor_config(state)
     {:noreply, state}
@@ -263,7 +269,7 @@ defmodule Kaleo.Scheduler do
     {:ok, config_host_pid} = Kaleo.ConfigHost.watch_config()
     ref = Process.monitor(config_host_pid)
 
-    state = %{
+    %{
       state
       | config_host_pid: config_host_pid,
         config_host_mon_ref: ref,
@@ -518,14 +524,15 @@ defmodule Kaleo.Scheduler do
         {nil, timers} ->
           timers
 
-        {ref, timers} ->
+        {{_start_at, ref}, timers} ->
           Process.cancel_timer(ref)
           timers
       end
 
     timer_ref = Process.send_after(self(), {:timer_tick, duration}, duration)
+    now = System.system_time(:millisecond)
 
-    timers = Map.put(timers, duration, timer_ref)
+    timers = Map.put(timers, duration, {now, timer_ref})
 
     # Loxe.Logger.debug "restarted timer",
     #   duration: duration,
@@ -582,7 +589,7 @@ defmodule Kaleo.Scheduler do
                 {:ok, %Item{} = subject}, %State{} = state ->
                   case subject.id do
                     nil ->
-                      Loxe.Logger.error "invalid item, cannot add as its missing its id"
+                      Loxe.Logger.error "invalid item, cannot add as it's missing its id"
                       state
 
                     id when is_binary(id) ->
