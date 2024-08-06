@@ -415,7 +415,7 @@ defmodule Kaleo.Scheduler do
 
                     true = :ets.insert(state.expired, {item_id, ev_item})
                   else
-                    {:ok, _ref} = Kaleo.ItemProcessor.process_ready_event(ready_at, item)
+                    {:ok, _ref} = Kaleo.ItemProcessorHost.process_ready_event(ready_at, item)
                   end
                   maybe_schedule_item(now, item_id, item, state)
 
